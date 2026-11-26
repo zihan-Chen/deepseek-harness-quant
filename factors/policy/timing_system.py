@@ -148,10 +148,12 @@ def policy_score() -> dict:
         from factors.policy.epu_factors import load_epu_monthly
         df = load_epu_monthly()
         if df is None or df.empty:
-            return {"score": 50, "note": "EPU 无数据（中性）", "short": "中性"}
+            return {"score": 50, "note": "EPU 无数据（FRED 不可达）——政策维度按中性 50",
+                    "short": "EPU缺失"}
         s = df["epu"].dropna()
         if len(s) < 12:
-            return {"score": 50, "note": f"EPU 样本不足（{len(s)}月）", "short": "中性"}
+            return {"score": 50, "note": f"EPU 样本不足（{len(s)}月）——政策维度按中性 50",
+                    "short": "EPU缺失"}
         cur = float(s.iloc[-1])
         z12 = (cur - s.iloc[-12:].mean()) / (s.iloc[-12:].std() + 1e-9)
         # 3 月趋势：cur 相对 3 月前变化（下降=改善）

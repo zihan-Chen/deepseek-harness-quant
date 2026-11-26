@@ -37,7 +37,13 @@ def _compute():
         return {"month": r["month"], "score": round(float(r["score"]), 3),
                 "bucket": r["bucket"], "ts": datetime.now().strftime("%Y-%m-%d %H:%M")}
     except Exception as e:
-        print(f"  [policy_hook] 计算失败: {str(e)[:60]}")
+        # ★部署修复：不再只打一行"计算失败: unable to open database file"（看不出病因）。
+        #   区分"缺数据/空库"与真异常，并明确告知回退口径（消息里已含口径，避免重复）。
+        msg = str(e)
+        if "EPU 库" in msg or "unable to open database file" in msg:
+            print(f"  [policy_hook] 跳过：{msg[:200]}")
+        else:
+            print(f"  [policy_hook] 计算失败: {msg[:80]}（政策维度按中性 50）")
         return None
 
 

@@ -767,7 +767,7 @@ if __name__ == "__main__":
     ap.add_argument("--update", action="store_true", help="更新远期收益")
     ap.add_argument("--summary", action="store_true", help="汇总统计")
     ap.add_argument("--dedupe", action="store_true", help="清理同 code 重复（保留最早）")
-    ap.add_argument("--machine", type=int, default=0, help="机器强因子 top N 入池（0.1% ≈ 5）")
+    ap.add_argument("--machine", type=int, default=0, help="机器强因子 top N 入池（0.1%% ≈ 5）")
     ap.add_argument("--human", action="store_true", help="人工选择 buy 入池")
     ap.add_argument("--niu", type=str, default=None, help="牛散决策入池（persona id）")
     ap.add_argument("--niu-picks", type=str, default="", help="牛散决策: code:action:priority:reason,code2:...")

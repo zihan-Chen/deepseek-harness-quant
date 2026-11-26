@@ -4,7 +4,7 @@
 背景：写保护绕行 → 多写侧每次运行写时间戳文件（breakout_alerts/pitch_track_pool/
 rank_live/portfolio/deck_decisions/opp_pool/daily_signal/pool_layers ...），
 4h 链累积几百个小文件，目录杂乱 + glob 变慢。
-策略：同名基名（去掉 _YYYYMMDD_HHMMSS 后缀）保留最新 keep 个，其余移入桌面/垃圾桶
+策略：同名基名（去掉 _YYYYMMDD_HHMMSS 后缀）保留最新 keep 个，其余移入 data/trash
 （不直接删——JSON/md 可能有审计价值，如 daily_signal 指令表、pitch_track_pool 远期池追踪）。
 固定名文件（无时间戳后缀）不碰；deck/report 的 HTML 版本由 cleanup_versions.py 处理。
 
@@ -23,7 +23,9 @@ import shutil
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
-TRASH = Path("<home>/Desktop/垃圾桶")
+# ★部署修复：原为写死的 "<home>/Desktop/垃圾桶"（作者本机路径），在别的机器上必然
+#   WinError 123 移动失败 → 归档步骤每次报错。改为仓库内 data/trash（已在 .gitignore）。
+TRASH = BASE / "data" / "trash"
 TS = re.compile(r"^(.+)_(\d{8}_\d{6})\.(json|md|csv)$")
 # 各模式独立保留数（未列出的走 --keep 默认）
 KEEP_OVERRIDE = {

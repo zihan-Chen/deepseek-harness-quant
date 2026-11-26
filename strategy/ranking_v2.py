@@ -33,10 +33,15 @@ sys.path.insert(0, str(BASE))
 import numpy as np
 import pandas as pd
 
-BARS_DB = Path(r"D:/劳威派量化数据/cache/bars.db")
-FIN_DB = Path(r"D:/劳威派量化数据/cache/finance.db")
-BASIC_DB = Path(r"D:/劳威派量化数据/cache/stock_basic.db")
-MV_CSV = Path(r"D:/劳威派量化数据/cache/circ_mv_map_full.csv")
+# ★部署修复：原为作者本机绝对路径 D:/劳威派量化数据/cache/*（别的机器上不存在 →
+#   sqlite "unable to open database file"，三层池/决策池直接跑不起来）。
+#   改为走 data/cache.py 的缓存目录解析（环境变量 > params.yaml > data/cache）。
+from data.cache import CACHE_DIR as _CACHE_DIR
+
+BARS_DB = _CACHE_DIR / "bars.db"
+FIN_DB = _CACHE_DIR / "finance.db"
+BASIC_DB = _CACHE_DIR / "stock_basic.db"
+MV_CSV = _CACHE_DIR / "circ_mv_map_full.csv"
 
 
 def load_close_panel(days=300, end=None) -> pd.DataFrame:

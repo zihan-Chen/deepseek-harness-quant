@@ -38,10 +38,22 @@ WEIGHTS = {"epu": -0.35, "epu_chg3m": -0.20, "sf_yoy": 0.30, "spread": 0.15}
 
 def load_panel() -> pd.DataFrame:
     """构造政策面板（月度）：month, epu, epu_chg_3m, sf_yoy_growth, spread"""
-    # EPU
+    # EPU ★部署修复：库缺失时原先 sqlite3.connect 直接抛 "unable to open database file"
+    #   （目录都不存在，报错信息完全看不出是 EPU 源不可达），改为明确的缺数据异常。
+    if not EPU_DB.exists():
+        EPU_DB.parent.mkdir(parents=True, exist_ok=True)
+        raise RuntimeError(
+            "EPU 库缺失（data/cache/policy/epu.db）：FRED 源在本机不可达，"
+            "请用 factors/policy/epu_fetcher.py 补数；缺失期间政策维度按中性 50 计")
     con = sqlite3.connect(str(EPU_DB))
     epu = pd.read_sql_query("SELECT month, epu FROM epu_monthly", con)
     con.close()
+    if epu is None or epu.empty:
+        # ★部署修复：库文件存在但 0 行（epu_fetcher 抓 FRED 超时会留下空库）→ 明确报缺数据，
+        #   否则下游 compute_score 返回空面板，policy_hook 静默回退、日志里什么都看不到。
+        raise RuntimeError(
+            "EPU 库为空（0 个月）：FRED 源在本机不可达，请重跑 factors/policy/epu_fetcher.py；"
+            "缺失期间政策维度按中性 50 计")
     epu["month"] = pd.to_datetime(epu["month"]).dt.strftime("%Y-%m")
     epu = epu.sort_values("month").reset_index(drop=True)
     epu["epu_chg_3m"] = epu["epu"] - epu["epu"].shift(3)

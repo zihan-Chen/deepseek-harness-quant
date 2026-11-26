@@ -78,12 +78,30 @@ ETF 映射           41 张 pitch 卡 + 8 只配置建议（复制组合相关 0
 > **数据不随仓库分发**：`data/`、`logs/`、`output/`、`report/`、`config/params.yaml`、`harness/home/.credentials.yaml`
 > 均已在 `.gitignore` 中；仓库只含代码、获取脚本与演示数据（合成序列），行情请按 `docs/数据说明.md` 自行获取。
 
-### 6. 已知限制
+### 6. 日更链路（2026-11-26 新增）
+
+`scripts/daily_run.py` 把盘后需要的 16 步串成一条命令（约 **28–30 分钟**，其中全市场扫描约 22 分钟）：
+
+```
+增量日线(3.6min) → 沪深300 → 宏观缓存(社融/国债) → 五福 parquet
+→ 机会扫描 --pitch → Pitch v2 → 短线科技池 → 三层池 → 择时系统
+→ 远期池 T+1 → 止损监测 → 日报(--dry-run) → 五福轮动信号 → ETF 映射
+→ 文件归档 → 部署自检(121 路由)
+```
+
+- 数据增量：`scripts/pull_real_data.py --incremental`，以库内最新交易日为基准回看 N 天，实测 **25.9 只/秒**（全市场约 3.6 分钟；全量 12 分钟只在首次/补历史时需要）
+- 产物：`logs/daily_run_<ts>.log` + `logs/daily_run_<ts>_summary.json`（每步状态/耗时/失败清单）
+- 计划任务：`DSHQuant-Daily`，每天 18:30 调 `scripts/daily.cmd`（隐藏控制台）
+  停用 `schtasks /Change /TN "DSHQuant-Daily" /DISABLE`，删除 `schtasks /Delete /TN "DSHQuant-Daily" /F`
+- 跳过参数：`--skip-fetch / --skip-scan / --skip-etf / --skip-verify`
+
+### 7. 已知限制
 
 - 估值类数据（PE/PB，走 tushare 备用服务器）未配置 → `value`/`quality_gap`/`pv_consensus` 类型扫描触发不了；
 - 历史 ST 标记未回填（仅最新交易日）；
 - 龙虎榜/股东户数/机构调研未拉取，相关因子为空；
-- 日更链路需手动/计划任务串起来（增量行情 → 扫描 → 科技池 → 日报 → 五福/ETF）。
+- 择时的"政策"维度缺 EPU 数据（FRED 不可达，akshare 备源只到 2023-11）→ 固定中性 50，界面标注 `EPU缺失`；
+- 择时的"宏观"维度依赖 `report/daily_signal.py`，该文件未包含在开源发布包中 → 目前回退 50。
 
 ---
 

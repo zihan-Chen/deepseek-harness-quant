@@ -26,7 +26,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
@@ -95,6 +95,20 @@ def fetch_one(code: str, start: str, end: str):
                "volume", "amount", "turn", "pct_chg", "is_st"]]
 
 
+def _latest_bar_date(cache) -> str | None:
+    """库内 qfq 最新交易日（增量模式的起点基准）。"""
+    import sqlite3
+    try:
+        uri = f"{Path(cache.db_path).resolve().as_uri()}?mode=ro&immutable=1"
+        con = sqlite3.connect(uri, uri=True, timeout=5)
+        try:
+            return con.execute("SELECT MAX(date) FROM daily_bar WHERE adjust='qfq'").fetchone()[0]
+        finally:
+            con.close()
+    except Exception:
+        return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--start", default="2019-01-01")
@@ -103,9 +117,22 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--include-delisted", action="store_true")
     ap.add_argument("--force", action="store_true", help="已覆盖的代码也重拉")
+    ap.add_argument("--incremental", action="store_true",
+                    help="日更增量：只补库内最新交易日之后 / 回看 N 天（实测约 0.2s/只，全市场 3–4 分钟）")
+    ap.add_argument("--days-back", type=int, default=5,
+                    help="增量模式回看天数（默认 5，覆盖长周末/节假日）")
     args = ap.parse_args()
 
     cache = DailyCache()
+    if args.incremental:
+        latest = _latest_bar_date(cache)
+        if not latest:
+            log("增量模式：库内无 qfq 数据 → 自动退回全量拉取")
+        else:
+            start_dt = datetime.strptime(latest, "%Y-%m-%d") - timedelta(days=args.days_back)
+            args.start = start_dt.strftime("%Y-%m-%d")
+            args.force = True          # 增量窗口内一律重拉，避免 covers() 判「已覆盖」而漏掉最新几日
+            log(f"增量模式：库内最新 {latest}，回看 {args.days_back} 天 → 从 {args.start} 起补齐")
     codes = universe(args.include_delisted, args.limit or None)
     log(f"股票池 {len(codes)} 只 | 区间 {args.start} ~ {args.end} | 并发 {args.workers} | "
         f"库 {cache.db_path}")
