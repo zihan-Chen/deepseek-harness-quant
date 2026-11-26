@@ -48,6 +48,10 @@ except Exception:
 # (名称, [脚本相对路径, 参数...], 超时秒, 关键步骤?)
 STEPS_FULL = [
     ("增量日线",      ["scripts/pull_real_data.py", "--incremental", "--days-back", "5"],  1200, True),
+    # ★ST 打标必须在增量日线之后：增量写入的 is_st 一律为 0（腾讯源无该字段），
+    #   会覆盖掉前一日已打的标记 → 不补这步，当天的 ST 过滤与风控兜底全部失效
+    #   （实测漏掉后池子里出现「ST八菱」）。
+    ("ST 标记",       ["scripts/mark_st_current.py"],                                      120, False),
     ("沪深300指数",   ["scripts/load_index.py"],                                            300, False),
     ("宏观缓存",      ["data/fetch_macro_cache.py"],                                        300, False),
     ("五福缓存",      ["scripts/build_wufu_cache.py"],                                      300, False),
