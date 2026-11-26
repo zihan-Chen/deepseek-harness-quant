@@ -33,11 +33,52 @@
       ps.in_tech_pitch ? '<span class="pv-badge pv-ot-tech_sentiment">短线</span>' : '',
       ps.in_forward_track ? '<span class="pv-badge pv-ot-pv_consensus">远期池</span>' : ''
     ].join('');
-    var dimHtml = Object.keys(dims).map(function (k) {
-      var v = dims[k];
-      var s = (typeof v === 'object' && v.score != null) ? +v.score : (typeof v === 'number' ? v : 0);
-      return '<div class="dim-row"><div class="dim-top"><b>' + k + '</b><span>' + Math.round(s) + ' 分</span></div>' +
-        '<div class="dim-bar"><div class="dim-fill" style="width:' + Math.max(4, Math.min(100, s)) + '%"></div></div></div>';
+    // ★2026-11-26 修复：四维评分读错了字段。
+    //   维度对象 `dimensions.tech / valuation` 里根本没有 score 字段（只有 state/mode 等描述），
+    //   `dimensions.opportunity.score` 在未命中时是 null → 四个条全是 0 分（用户反馈"四维评分都没有"）。
+    //   真实分数在 `d.dim_scores`（opportunity/risk/tech/valuation），这里改用它，并补上中文名、
+    //   满分分母与维度要点，负分（风控/技术可为负）单独标红。
+    var DIM_META = {
+      opportunity: { cn: '机会', max: 40 },
+      risk: { cn: '风控', max: 30 },
+      tech: { cn: '技术', max: 15 },
+      valuation: { cn: '估值', max: 15 }
+    };
+    var dimScores = d.dim_scores || {};
+    function dimNote(k, v) {
+      v = v || {};
+      if (k === 'opportunity') {
+        return v.otype_cn ? ('命中「' + v.otype_cn + '」' + (v.rank_in_type ? ' 同类#' + v.rank_in_type : '')) : '未命中机会类';
+      }
+      if (k === 'risk') {
+        var lv = v.level || '—';
+        var nf = (v.flags || []).length;
+        return '风控 ' + lv + (nf ? ('（' + nf + ' 项红旗）') : '');
+      }
+      if (k === 'tech') {
+        return v.state ? String(v.state) : '样本不足（<60 个交易日）';
+      }
+      if (k === 'valuation') {
+        var bits = [v.mode || '—'];
+        if (v.roe != null) bits.push('ROE ' + v.roe + '%');
+        if (v.pe != null) bits.push('PE ' + v.pe);
+        if (v.pb != null) bits.push('PB ' + v.pb);
+        return bits.join(' · ');
+      }
+      return '';
+    }
+    var dimHtml = Object.keys(DIM_META).map(function (k) {
+      var meta = DIM_META[k];
+      var raw = dimScores[k];
+      var s = (raw != null && !isNaN(raw)) ? +raw : 0;
+      var pct = Math.max(0, Math.min(100, (s / meta.max) * 100));
+      var neg = s < 0;
+      var color = neg ? '#eb5757' : (s / meta.max >= 0.6 ? '#27ae60' : (s / meta.max >= 0.3 ? '#f2c94c' : '#94A3B8'));
+      return '<div class="dim-row" title="' + esc(dimNote(k, dims[k])) + '">' +
+        '<div class="dim-top"><b>' + meta.cn + '</b>' +
+        '<span style="color:' + color + '">' + s + ' / ' + meta.max + '</span></div>' +
+        '<div class="dim-bar"><div class="dim-fill" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<div class="mini" style="margin-top:2px;color:#94A3B8;font-size:11px">' + esc(dimNote(k, dims[k])) + '</div></div>';
     }).join('');
     var ov = document.createElement('div');
     ov.id = 'lw-search-ov';
@@ -60,7 +101,13 @@
             '<div class="mini">硬止损 ' + pv(sp.stop_loss_pct) + ' · 时间止损 ' + f(sp.time_stop_weeks) + ' 周</div>' +
             '<div class="mini" style="margin-top:4px">最大回撤 ' + pv(sp.max_drawdown_pct) + ' · 移动 MA' + f(sp.trailing_ma) + '</div></div>' +
         '</div>' +
-        '<div class="v2-card" style="margin-top:12px;padding:14px"><h2 style="font-size:13px">四维评分</h2>' + (dimHtml || '<div class="mini">—</div>') + '</div>' +
+        '<div class="v2-card" style="margin-top:12px;padding:14px"><h2 style="font-size:13px">四维评分</h2>' + (dimHtml || '<div class="mini">—</div>') +
+          (d.coverage && (d.coverage.missing || []).length
+            ? '<div class="mini" style="margin-top:8px;color:#f2c94c;font-size:11px">数据缺口：' +
+              esc((d.coverage.missing || []).join(' / ')) + (d.coverage.new_listing ? '（新股：上市 ' + esc(d.coverage.bars_days) + ' 个交易日）' : '') +
+              ' —— 缺数据的维度按 0 分参与合计，不等同于负面评价</div>'
+            : '') +
+        '</div>' +
         '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:12px">' +
           '<div class="v2-card" style="margin-top:0;padding:14px"><h2 style="font-size:13px">持仓</h2>' +
             '<div class="mini">' + esc(f(pos.status, '未持仓')) + (pos.entry_date ? ' · ' + esc(pos.entry_date) : '') + '</div>' +
