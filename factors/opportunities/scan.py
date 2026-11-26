@@ -111,10 +111,37 @@ def _load_data_cfg():
 
 
 def load_valuation(date: str = None) -> dict:
-    """估值数据（备用服务器 daily-basic，全市场 5535 只）→ {code: {pe, pb, dv_ratio, total_mv}}
-    列序（实测）：ts_code, trade_date, pe, pe_ttm, pb, ps, ps_ttm, dv_ratio, dv_ttm, total_mv, circ_mv
-    失败返回 {}（扫描器降级为价格分位近似）
+    """估值数据 → {ts_code: {pe, pe_ttm, pb, dv_ratio, dv_ttm, total_mv, circ_mv}}
+
+    ★2026-11-27 顺序调整（本机无作者备用服务器）：
+      ① 优先读本地 `finance.db.valuation`（由 scripts/pull_valuation_baidu.py 写入，
+         免费源 PE(TTM)/PB/总市值；一次扫描内 5000+ 只，离线可用）；
+      ② 本地没有时退回作者备用服务器 `data.tushare_backup`（HTTP /daily-basic）；
+      ③ 都没有 → {}，调用方降级为价格分位近似。
     """
+    # ① 本地估值快照表
+    try:
+        import sqlite3 as _sq
+        from pathlib import Path as _P
+        _f = _P(FIN_DB).resolve()
+        _con = _sq.connect(f"{_f.as_uri()}?mode=ro&immutable=1", uri=True, timeout=5)
+        try:
+            _d = date or _con.execute("SELECT MAX(trade_date) FROM valuation").fetchone()[0]
+            if _d:
+                _rows = _con.execute(
+                    "SELECT code, pe, pe_ttm, pb, dv_ttm, total_mv, circ_mv FROM valuation "
+                    "WHERE trade_date=?", (_d,)).fetchall()
+            else:
+                _rows = []
+        finally:
+            _con.close()
+        if _rows:
+            return {r[0]: {"pe": r[1], "pe_ttm": r[2], "pb": r[3],
+                           "dv_ratio": r[4], "dv_ttm": r[4],
+                           "total_mv": r[5], "circ_mv": r[6]} for r in _rows}
+    except Exception:
+        pass
+    # ② 作者备用服务器
     import requests
     try:
         cfg = _load_data_cfg()

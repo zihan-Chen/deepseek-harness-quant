@@ -52,6 +52,9 @@ STEPS_FULL = [
     #   会覆盖掉前一日已打的标记 → 不补这步，当天的 ST 过滤与风控兜底全部失效
     #   （实测漏掉后池子里出现「ST八菱」）。
     ("ST 标记",       ["scripts/mark_st_current.py"],                                      120, False),
+    # 估值快照（免费源，PE/PB/总市值）→ finance.db.valuation；不跑则 value/quality_gap 类与
+    # 个股诊断的估值维度全部缺数据（scan.load_valuation 优先读这张表）
+    ("估值快照",      ["scripts/pull_valuation_baidu.py", "--workers", "6"],               900, False),
     ("沪深300指数",   ["scripts/load_index.py"],                                            300, False),
     ("宏观缓存",      ["data/fetch_macro_cache.py"],                                        300, False),
     ("五福缓存",      ["scripts/build_wufu_cache.py"],                                      300, False),
@@ -69,8 +72,9 @@ STEPS_FULL = [
     ("部署自检",      ["scripts/_smoke_deploy.py"],                                         600, False),
 ]
 # 参数 → 要跳过的步骤名
-SKIP_FLAGS = {"--skip-fetch": {"增量日线"}, "--skip-scan": {"机会扫描", "Pitch v2"},
-              "--skip-etf": {"ETF 映射"}, "--skip-verify": {"部署自检"}}
+SKIP_FLAGS = {"--skip-fetch": {"增量日线", "ST 标记"}, "--skip-scan": {"机会扫描", "Pitch v2"},
+              "--skip-etf": {"ETF 映射"}, "--skip-verify": {"部署自检"},
+              "--skip-valuation": {"估值快照"}}
 
 
 def main() -> int:
