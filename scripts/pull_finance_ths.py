@@ -59,6 +59,11 @@ QUALITY_IND = [
     ("经营活动净现金/归属母公司的净利润", "cfo_to_np"),
     ("经营性现金净流量/营业总收入", "cfo_to_or"),
 ]
+# 同花顺返回百分数的字段（入库前 ÷100 转成项目约定的小数）：
+#   risk/stock_risk._check_row 的脏数据闸门是 gp>1.0/liab>1.5、beneish 以 cfo_to_np>=1.0 判断，
+#   stock_check 显示时又 *100 —— 存百分数会让这些下游全部失真（2026-11-26 实测踩坑）。
+#   cfo_to_np / cfo_to_or 本来就是倍数/小数（中位数 1.41/0.13），current_ratio 是倍数，均不转换。
+PCT_TO_DEC = ("roe_avg", "gp_margin", "np_margin", "liability_to_asset")
 QUALITY_COLS = ["roe_avg", "gp_margin", "np_margin", "current_ratio",
                 "liability_to_asset", "cfo_to_np", "cfo_to_or"]
 
@@ -134,6 +139,14 @@ def fetch_one(code6: str):
         q_rows.append(q)
 
     fin_rows = parse_finance(code6, pd.DataFrame(long_rows)) if long_rows else []
+    # 营收/净利保持"亿元"；roe 从百分数转小数（项目约定 finance_report.roe 为小数）
+    fin_rows = [(c, p, net, rev, sqn, sqny, sqr, sqry, eps,
+                 (roe / 100.0 if roe is not None else None), src)
+                for (c, p, net, rev, sqn, sqny, sqr, sqry, eps, roe, src) in fin_rows]
+    for r in q_rows:
+        for k in PCT_TO_DEC:
+            if r.get(k) is not None:
+                r[k] = r[k] / 100.0
     q_out = [(code6, r["period"], *[r.get(c) for c in QUALITY_COLS], None) for r in q_rows]
     return fin_rows, q_out
 

@@ -397,7 +397,7 @@ def check(code6: str) -> dict:
         con = _ro_conn(QD_DB)
         q = con.execute(
             "SELECT roe_avg FROM quality WHERE code=? ORDER BY period DESC LIMIT 1",
-            (code,)).fetchone()
+            (code6,)).fetchone()
         con.close()
         roe = q[0] if q else None
         if roe is not None:
@@ -421,7 +421,7 @@ def check(code6: str) -> dict:
         con = _ro_conn(QD_DB)
         q = con.execute(
             "SELECT roe_avg, gp_margin, current_ratio, liability_to_asset, cfo_to_np "
-            "FROM quality WHERE code=? ORDER BY period DESC LIMIT 1", (code,)).fetchone()
+            "FROM quality WHERE code=? ORDER BY period DESC LIMIT 1", (code6,)).fetchone()
         con.close()
         if q:
             rk = _check_row(code, None, *q)
@@ -471,9 +471,42 @@ def check(code6: str) -> dict:
     risk_score = max(-30, min(30, risk_score))
 
     # ---------- 交叉综合 ----------
+    # ★2026-11-26 修复（用户反馈：短线池推荐的股票，搜索诊断却是「E 回避」）：
+    #   四个维度里只要缺数据（新股无估值/无历史技术样本/质量库未覆盖），得分就是 0，
+    #   而总和又直接映射成 A–E —— 于是"数据不足"被当成"差"，与短线池的结论自相矛盾。
+    #   现在先算数据覆盖：缺 ≥2 个维度 → 不给 A–E 评级，标「证据不足」，分值仅作参考。
+    _gaps = []
+    # 新股/样本不足：上市不足 60 个交易日 → 技术面无法计算，直接不定级（避免"数据不足=差"）
+    _bars_n = None
+    try:
+        _con_n = _ro_conn(BARS_DB)
+        _bars_n = _con_n.execute(
+            "SELECT COUNT(*) FROM daily_bar WHERE code=? AND adjust='qfq'", (code,)).fetchone()[0]
+        _con_n.close()
+    except Exception:
+        pass
+    _new_listing = _bars_n is not None and 0 < _bars_n < 60
+    _val_missing = (val_dim.get("mode") in ("无估值数据",) or
+                    (val_dim.get("pe") is None and val_dim.get("pb") is None
+                     and val_dim.get("roe") is None and val_dim.get("np_yoy") is None))
+    if _val_missing:
+        _gaps.append("估值/成长")
+    if risk_dim.get("level") == "NO_DATA":
+        _gaps.append("质量(财务)")
+    if _new_listing:
+        _gaps.append(f"技术样本（上市仅 {_bars_n} 个交易日）")
+    elif not tech:
+        _gaps.append("技术面样本")
+    coverage = {"dim_total": 4, "n_ok": 4 - len(_gaps), "missing": _gaps,
+                "bars_days": _bars_n, "new_listing": bool(_new_listing)}
+
     total = opp_score + risk_score + tech_score + val_score
     total = max(0, min(100, round(total)))
-    if total >= 80:
+    if _new_listing:
+        grade, label = "NA", "样本不足（新股）"
+    elif len(_gaps) >= 3:
+        grade, label = "NA", "证据不足"
+    elif total >= 80:
         grade, label = "A", "重点关注"
     elif total >= 70:
         grade, label = "B", "关注"
@@ -482,7 +515,12 @@ def check(code6: str) -> dict:
     elif total >= 50:
         grade, label = "D", "谨慎"
     else:
-        grade, label = "E", "回避"
+        # ★2026-11-26：低分若无任何"负面证据"，不叫"回避"（回避=有风险信号），改叫"无机会"
+        _neg = (bool(risk_dim.get("flags")) or risk_dim.get("level") in ("BLOCK", "WATCH")
+                or st.startswith("⚪") or val_score <= -5
+                or (risk_dim.get("beneish") or {}).get("level") == "HIGH"
+                or bool(risk_dim.get("fake")))
+        grade, label = "E", ("回避" if _neg else "无机会")
 
     # 结论
     parts = []
@@ -508,6 +546,16 @@ def check(code6: str) -> dict:
     elif val_score <= -5:
         parts.append("估值偏高")
     conclusion = "；".join(parts) + f"。综合评级：{label}（{total} 分）"
+    if _new_listing:
+        conclusion = ("；".join(parts) +
+                      f"。**上市仅 {_bars_n} 个交易日，技术/估值样本不足，暂不定级**"
+                      f"——参考分 {total} 不代表看空。")
+    elif grade == "NA":
+        conclusion = ("；".join(parts) + f"。**证据不足，暂不定级**（缺：{'/'.join(_gaps)}）"
+                      f"——参考分 {total} 不代表看空，仅表示这 {len(_gaps)} 个维度没有可用数据。")
+    elif grade == "E" and label == "无机会":
+        conclusion = ("；".join(parts) + f"。综合评级：无机会（{total} 分）"
+                      f"——低分来自「未命中机会类」与数据缺口，**没有风险否决项**，不等于看空。")
 
     # ---------- 池状态 + 止损 ----------
     pitch = None
@@ -597,11 +645,19 @@ def check(code6: str) -> dict:
     except Exception:
         pass
 
+    # ★2026-11-26：与短线池交叉说明（避免"诊断回避 / 短线推荐"看起来打架）
+    if tech_entries:
+        _te = tech_entries[0]
+        conclusion += (f"｜注：该股同时在**短线池**（科技线 score {_te.get('score')}，"
+                       f"{_te.get('tier') or ''} 档，带 ATR 止损 {(_te.get('stop_plan') or {}).get('atr_stop')}）——"
+                       f"短线池只看技术/情绪/止损空间，不依赖估值与财务质量，口径与综合诊断不同。")
+
     return {
         "ok": True, "code": code, "code6": code.split(".")[0], "name": name,
         "industry": industry, "date": pdate, "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "elapsed_s": round(time.time() - t0, 1),
         "rating": {"grade": grade, "label": label, "score": total},
+        "coverage": coverage,          # ★2026-11-26 数据覆盖（缺失维度会导致 NA 不定级）
         "dimensions": {
             "opportunity": opp_dim, "risk": risk_dim,
             "tech": tech, "valuation": val_dim,

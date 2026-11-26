@@ -21,7 +21,11 @@
     var pos = d.position || {};
     var fwd = d.forward || {};
     var dims = d.dimensions || {};
-    var gradeCls = r.grade === 'A' ? '#27ae60' : r.grade === 'B' ? '#5e6ad2' : r.grade === 'C' ? '#f2c94c' : '#eb5757';
+    // ★2026-11-26：NA（证据不足/新股样本不足）单独用灰色，不能跟着 E 一起标红——
+    //   否则"数据不够"看起来像"看空"（用户反馈：短线池推荐的次新股被诊断成 E 回避）。
+    var gradeCls = r.grade === 'A' ? '#27ae60' : r.grade === 'B' ? '#5e6ad2'
+                 : r.grade === 'C' ? '#f2c94c'
+                 : (r.grade === 'NA' ? '#94A3B8' : '#eb5757');
     // 池状态徽章
     var poolBadges = [
       ps.in_opp_pool ? '<span class="pv-badge pv-ot-value">机会池</span>' : '',
