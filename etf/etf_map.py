@@ -125,14 +125,25 @@ def fetch_etf(code):
         try:
             if os.path.exists(path):
                 df = pd.read_csv(path)
-                last = str(df['date'].max())
+                # ★部署修复：缓存读取后 date 是字符串，而新浪接口返回的是 datetime.date →
+                #   `new['date'] > last` 抛 "'>' not supported between datetime.date and str"，
+                #   导致首次跑成功后、**第二次起每只 ETF 全部失败**（日更链里 ETF 映射每天必挂）。
+                df['date'] = pd.to_datetime(df['date'], errors='coerce').dt.strftime('%Y-%m-%d')
+                df = df.dropna(subset=['date'])
+                last = df['date'].max()
                 new = ak.fund_etf_hist_sina(symbol=symbol)
-                new = new[new['date'] > last]
+                if new is not None and len(new):
+                    new = new.copy()
+                    new['date'] = pd.to_datetime(new['date'], errors='coerce').dt.strftime('%Y-%m-%d')
+                    new = new.dropna(subset=['date'])
+                    new = new[new['date'] > last]
                 if new is not None and len(new):
                     df = pd.concat([df, new]).drop_duplicates(subset=['date'], keep='last').sort_values('date')
                     df.to_csv(path, index=False)
                 return df
             df = ak.fund_etf_hist_sina(symbol=symbol)
+            df = df.copy()
+            df['date'] = pd.to_datetime(df['date'], errors='coerce').dt.strftime('%Y-%m-%d')
             df.to_csv(path, index=False)
             return df
         except Exception as e:
@@ -227,6 +238,10 @@ def main():
         amt = float(etf_rets[code]['amount'].tail(20).mean()) / 1e8   # 近20日日均成交额(亿)
         st.update({'code': code, 'name': name, 'category': cat, 'avg_amount_yi': round(amt, 2)})
         rows.append(st)
+    if not rows:
+        # ★部署修复：全部 ETF 拉取失败时 corr_df 为空 → 后面 'corr' 列 KeyError 不解释原因
+        raise SystemExit('ETF 映射中断：没有可用的 ETF 日线数据（检查 data/cache/etf/*.csv 与新浪接口），'
+                         '详见上方"失败"清单')
     corr_df = pd.DataFrame(rows).sort_values('corr', ascending=False)
 
     # ETF 间相关矩阵（去冗余用）

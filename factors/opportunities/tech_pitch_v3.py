@@ -102,7 +102,16 @@ def load_recent(days: int = CONSEC_DAYS) -> pd.DataFrame:
 
 
 def _emotion_features(df: pd.DataFrame) -> pd.DataFrame:
-    """按 code 聚合情绪特征：近5日涨停数 / 连板高度 / 换手均值 / 散户活跃度代理"""
+    """按 code 聚合情绪特征：近5日涨停数 / 连板高度 / 换手均值 / 最新日换手 / 散户活跃度代理
+
+    ★2026-11-26 口径修复：原实现把 loader 载入的**全部 10 天**（CONSEC_DAYS）聚合成
+    limup_cnt / turn_mean，但文案写的是"近5日…换手 X%"，导致：
+      · 000533 顺钠股份 卡片写「近5日涨停 0 次 · 连板 0 · 换手 12.7%」，
+        而 12.7% 其实是 **10 日均换手**（近5日均值为 9.9%，当日为 11.5%）；
+      · 与行情软件（同花顺当日 11.50%）自然对不上。
+    现改为：情绪窗口严格取最近 LIMUP_DAYS(=5) 个交易日，并额外输出最新日换手 turn_last，
+    文案同时给"今日 / 5日均"，不再混口径。
+    """
     df = df.copy()
     df["limit_up"] = df.apply(lambda r: 1 if (r["pct_chg"] is not None and r["pct_chg"] >= _board_pct(r["code"]) and not r["is_st"]) else 0, axis=1)
     # 一字板近似：涨停且当日高=低（无振幅）
@@ -118,13 +127,29 @@ def _emotion_features(df: pd.DataFrame) -> pd.DataFrame:
             else:
                 break
         df.loc[g.index, "consec"] = c
-    agg = df.groupby("code").agg(
+
+    def _nanmean(x):
+        vals = [v for v in x if v is not None and not (isinstance(v, float) and np.isnan(v))]
+        return float(np.mean(vals)) if vals else 0.0
+
+    # ★情绪窗口：只取最近 LIMUP_DAYS 个交易日（与文案口径一致）
+    dates = sorted(df["date"].unique())
+    last_n = set(dates[-LIMUP_DAYS:])
+    dfn = df[df["date"].isin(last_n)]
+    agg = dfn.groupby("code").agg(
         limup_cnt=("limit_up", "sum"),
         consec_max=("consec", "max"),
         yizi_cnt=("yizi", "sum"),
-        turn_mean=("turn", lambda x: float(np.nanmean([v for v in x if v is not None])) if any(v is not None for v in x) else 0.0),
+        turn_mean=("turn", _nanmean),          # 近 N 日均换手
         vol_mean=("volume", "mean"),
     ).reset_index()
+    # 最新交易日换手（用于展示"今日"真实值，避免拿均值当当日值）
+    latest = dates[-1] if dates else None
+    if latest is not None:
+        snap = df[df["date"] == latest].set_index("code")["turn"]
+        agg["turn_last"] = agg["code"].map(snap)
+    else:
+        agg["turn_last"] = None
     agg["active"] = agg["limup_cnt"] * (1 + agg["turn_mean"] / 5.0)   # 散户讨论度代理：涨停数×换手
     return agg
 
@@ -361,7 +386,11 @@ def build() -> Path:
             "score_breakdown": score_breakdown,   # ★2026-08-11 打分拆解（前端展示各维度分）
             "total_mv_yi": round(_mv, 1) if _mv else None,
             "size_tier": _tier,
-            "trigger": f"近{LIMUP_DAYS}日涨停 {int(r['limup_cnt'])} 次 · 连板 {int(r['consec_max'])} · 换手 {r['turn_mean']:.1f}%",
+            "trigger": (f"近{LIMUP_DAYS}日涨停 {int(r['limup_cnt'])} 次 · 连板 {int(r['consec_max'])} · "
+                        f"换手 今日{r['turn_last']:.1f}% / {LIMUP_DAYS}日均{r['turn_mean']:.1f}%"
+                        if r.get("turn_last") is not None and not (isinstance(r["turn_last"], float) and np.isnan(r["turn_last"]))
+                        else f"近{LIMUP_DAYS}日涨停 {int(r['limup_cnt'])} 次 · 连板 {int(r['consec_max'])} · "
+                             f"换手 {LIMUP_DAYS}日均{r['turn_mean']:.1f}%"),
             "evidence": f"情绪分 {emo_s:.2f}（涨停/连板/换手）· 短线表现 {short_s:.2f}（涨停反转 ICIR 1.53 实证）· "
                         f"止损安全 {stop_s:.2f}（ATR{ATR_N} 止损 {stop_px}）· 龙虎榜 {dt_s:.2f}"
                         + (f" · 高开诱多溢价 {trap['premium_pct']:.0%}" if trap.get("premium_pct") is not None else ""),

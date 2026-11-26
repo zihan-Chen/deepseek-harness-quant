@@ -54,6 +54,8 @@ AI 不预测个股。这是硬约束，不是选项。
 | 9 | 五福轮动报 `Unable to find a usable engine` | 缺 pyarrow，且 `data/factorpool/output/cache/wufu_*.parquet` 是作者侧产物、仓库不含 | 装 pyarrow；新增 `scripts/build_wufu_cache.py` 用新浪免费接口重建 4 指数 + 9 ETF 缓存；`widget()` 资产名改按列名映射（原来按位置硬编码） |
 | 10 | `/api/etf_map` 404、ETF 页空白 | 该路由是静态文件路由，`output/etf_map.json` 从未生成 | 跑 `etf/etf_map.py`（52 秒）→ 41 张 ETF pitch 卡 + 8 只配置建议 |
 | 11 | 门户"实时行情暂不可用" | akshare 1.20.46 把 `stock_zh_a_spot` 改名 `stock_zh_a_spot_sina` | `live_api.py` 动态解析新旧函数名；`market_open` 改按 A 股交易时段判断（原来恒为 True） |
+| 12 | 短线卡片"换手 12.7%"与同花顺当日 11.50% 对不上 | `tech_pitch_v3` 把载入的 **10 天**换手均值当"近5日换手"显示 | 情绪窗口严格取 5 日；文案改为 `换手 今日X% / 5日均Y%` |
+| 13 | ETF 映射每天必挂（首跑 44 只全失败） | 缓存 CSV 的 date 是字符串、新浪返回 datetime.date，比较时类型冲突 | 统一转 `YYYY-MM-DD` 再比较；无可用 ETF 时给出明确中断原因 |
 
 ### 4. 新增的运维脚本
 
