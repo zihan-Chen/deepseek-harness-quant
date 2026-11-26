@@ -722,7 +722,12 @@
         ? docs.map(function (x) { return '<div>· <b style="color:var(--navy)">' + R._f(x.name) + '</b> <span style="color:var(--muted)">' + R._f(x.path) + '</span></div>'; }).join('')
         : '<div class="mini" style="opacity:.6">无</div>';
     }).catch(function (e) {
-      document.getElementById('hz-conn').innerHTML = '<span style="color:var(--red)">读取失败：' + e + '</span>';
+      // 快照接口异常时不再甩原始错误码：404 = 快照未生成（空态），其余保留原文便于排查
+      var _m = String(e || '');
+      var _hint = _m.indexOf('404') >= 0
+        ? '快照未就绪（harness_state.json 未生成，HARNESS 本体不受影响）'
+        : ('读取失败：' + _m);
+      document.getElementById('hz-conn').innerHTML = '<span style="color:var(--red)">' + _hint + '</span>';
     });
   }
   loadHarness();

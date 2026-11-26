@@ -86,7 +86,7 @@ def _latest_close_of(code: str):
         best = None
         for _p in paths:
             try:
-                _uri = _P(_p).as_uri() + "?mode=ro&immutable=1"
+                _uri = _P(_p).resolve().as_uri() + "?mode=ro&immutable=1"
                 con = sqlite3.connect(_uri, uri=True, timeout=3)
                 row = con.execute(
                     "SELECT close, date FROM daily_bar WHERE code=? ORDER BY date DESC LIMIT 1",

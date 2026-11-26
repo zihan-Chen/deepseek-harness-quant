@@ -103,7 +103,7 @@ def live_forward(force: bool = False) -> dict:
             for _p in (["data/cache/bars.db"] +
                        [str(p) for p in sorted(_P3("data/cache").glob("bars_incr_*.db"))[-3:]]):
                 try:
-                    con = _sq2.connect(_P3(_p).as_uri() + "?mode=ro&immutable=1",
+                    con = _sq2.connect(_P3(_p).resolve().as_uri() + "?mode=ro&immutable=1",
                                        uri=True, timeout=3)
                     _m = con.execute("SELECT MAX(date) FROM daily_bar").fetchone()[0]
                     con.close()
@@ -1080,7 +1080,7 @@ def portfolio_perf() -> dict:
             inc = sorted(_g.glob("data/cache/bars_incr_*.db"))[-3:]
             return dbs + inc
         def _ro(p):
-            return f"{_P(p).as_uri()}?mode=ro&immutable=1"
+            return f"{_P(p).resolve().as_uri()}?mode=ro&immutable=1"
         def _fetch(code, ed, adjust="qfq"):
             out = {}
             for db in _dbs():
@@ -1398,7 +1398,7 @@ def live_calendar() -> dict:
             str(p) for p in sorted(_P2("data/cache").glob("bars_incr_*.db"))[-3:]]
         for _p in _db_paths:
             try:
-                con = sqlite3.connect(_P2(_p).as_uri() + "?mode=ro&immutable=1",
+                con = sqlite3.connect(_P2(_p).resolve().as_uri() + "?mode=ro&immutable=1",
                                       uri=True, timeout=3)
                 _dayset.update(r[0] for r in con.execute(
                     "SELECT DISTINCT date FROM daily_bar").fetchall())
@@ -3098,6 +3098,16 @@ def live_data_assets() -> dict:
 _rt_cache = {"ts": 0.0, "data": None, "err": None}
 
 
+def _in_trading_session() -> bool:
+    """A 股连续竞价时段（周一~周五 09:15-11:30 / 13:00-15:00）。
+    不含节假日判断：节假日盘口不动，但快照里的 `snap_time` 会停在上一交易日，前端可辨。"""
+    now = datetime.now()
+    if now.weekday() >= 5:
+        return False
+    hm = now.hour * 60 + now.minute
+    return (9 * 60 + 15 <= hm <= 11 * 60 + 30) or (13 * 60 <= hm <= 15 * 60)
+
+
 def live_realtime() -> dict:
     """盘中实时行情快照：涨跌家数/涨停数/成交额/涨跌幅分布/领涨领跌。
     数据源：新浪实时快照（akshare stock_zh_a_spot，60s 缓存）。
@@ -3116,7 +3126,12 @@ def live_realtime() -> dict:
         _sk.setdefaulttimeout(20)
         import akshare as _ak
         import pandas as _pd
-        df = _ak.stock_zh_a_spot()   # 新浪全市场实时（5542 只）
+        # ★部署修复：akshare 1.20.46 把 `stock_zh_a_spot` 改名 `stock_zh_a_spot_sina`
+        #   （旧名直接 AttributeError → 门户"实时行情暂不可用"）。按可用性动态解析，兼容新旧版本。
+        _spot_fn = getattr(_ak, "stock_zh_a_spot_sina", None) or getattr(_ak, "stock_zh_a_spot", None)
+        if _spot_fn is None:
+            raise RuntimeError("当前 akshare 版本没有全市场实时快照接口（stock_zh_a_spot_sina）")
+        df = _spot_fn()   # 新浪全市场实时（约 5500 只，~9s，60s 缓存）
         if df is None or df.empty:
             raise ValueError("空快照")
         # 列名兼容（新浪：最新价/涨跌幅/成交额/成交量 等）
@@ -3166,6 +3181,7 @@ def live_realtime() -> dict:
             pass
         out.update({
             "n_stocks": int(len(df)),
+            "market_open": _in_trading_session(),   # ★部署修复：原先恒为 True（收盘后也显示"交易中"）
             "up": up, "down": down, "flat": flat,
             "limit_up": limit_up, "limit_down": limit_down,
             "median_chg": round(med, 2),

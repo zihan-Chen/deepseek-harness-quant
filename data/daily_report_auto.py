@@ -27,6 +27,12 @@ from datetime import datetime
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+# ★部署修复：Windows 控制台默认 GBK，脚本会 print ✅/❌ 等 emoji → UnicodeEncodeError 直接中断
+#   （日报其实已写盘，但退出码非 0，计划任务会误判失败）。固定 stdout 为 UTF-8 + errors=replace。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 LOGS = BASE / "logs"
 REPORT = BASE / "report"
 OUTPUT = BASE / "output"
@@ -363,6 +369,8 @@ def build_report(date, timing, picks, skip_reason, pitch_es, tech_es, dry_run):
         t1 = f"{f.get('t1_avg')*100:+.2f}%" if f.get("t1_avg") is not None else "—"
         lines.append(f"- {f.get('factor')}：pitch {f.get('n_pitch')} 次 | T+1 {t1}")
     report = REPORT / f"daily_report_{date}.md"
+    # ★部署修复：report/ 目录在全新解压的仓库里不存在（首次运行直接 FileNotFoundError）
+    REPORT.mkdir(parents=True, exist_ok=True)
     report.write_text("\n".join(lines), encoding="utf-8")
     return report
 

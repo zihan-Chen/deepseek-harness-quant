@@ -115,14 +115,14 @@ def widget() -> dict:
     供 /api/live/wufu_rotation（门户常显摆件；弱市防守建议仍读 global_rotation.json）。
     列名在因子池生成时损坏（GBK 乱码）→ 按净值轨迹推断的位置映射（沪深300/黄金/恒指/中证500/日经/标普/纳指/德国/黄金2）。"""
     etf = pd.read_parquet(CACHE / "wufu_etf.parquet")
-    # 列名在因子池生成时损坏（GBK 乱码）→ 按净值轨迹 + 相关矩阵推断的位置映射：
-    # [沪深300, 黄金, 恒指, 中证500, 日经, 标普500, 纳指, 债券/避险(与全资产低相关), 黄金2]
-    names = ["沪深300ETF", "黄金ETF", "恒指ETF", "中证500ETF", "日经ETF",
-             "标普500ETF", "纳指ETF", "避险资产", "黄金ETF2"]
+    # ★列名改为直接按 parquet 列名映射：原实现按位置硬编码 9 个名字（"因子池生成时列名 GBK 损坏"的权宜之计），
+    #   一旦缓存重建/列序调整就会张冠李戴。命名约定见 scripts/build_wufu_cache.py。
+    alias = {"黄金2": "黄金ETF2", "有色": "有色金属ETF", "豆粕": "豆粕ETF",
+             "沪深300": "沪深300ETF"}
     ma10e = etf.rolling(MA10_WIN).mean()
     assets = []
-    for i, col in enumerate(etf.columns):
-        name = names[i] if i < len(names) else f"资产{i + 1}"
+    for col in etf.columns:
+        name = alias.get(col) or ETF_CN.get(col) or str(col)
         s = etf[col].dropna()
         if len(s) < 60:
             continue

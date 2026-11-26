@@ -15,6 +15,8 @@ quantstats>=0.0.81         # 绩效指标（实测通过）
 numpy>=1.26
 pandas>=2.2
 pyyaml>=6.0                # 读取 config/params.yaml
+pyarrow>=15.0              # parquet 读写（五福轮动缓存、分钟数据、subj_quant 等；缺了 pandas 会报
+                           # "Unable to find a usable engine"，相关接口静默失败）
 
 # ---- 可选 ----
 matplotlib>=3.8            # 图表

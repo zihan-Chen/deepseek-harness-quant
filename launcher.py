@@ -61,10 +61,18 @@ def start_harness(base: Path):
     env = dict(os.environ)
     env["DSH_HOME"] = str(harness_root / "home")
     print(f"[QuantDeck] 启动 DeepSeek HARNESS（DSH_HOME={env['DSH_HOME']}）...")
+    # 输出落盘到 logs/harness.log：原先是 DEVNULL，HARNESS 启动失败（如 profiles 下
+    # node_modules 落成真实目录、端口占用）时控制台看不到任何原因，只能盲猜。
+    try:
+        log_dir = base / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_fp = open(log_dir / "harness.log", "ab")
+    except Exception:
+        log_fp = subprocess.DEVNULL
     try:
         proc = subprocess.Popen([str(node), str(dsh_bin), "web"],
                                 cwd=str(harness_root), env=env,
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                stdout=log_fp, stderr=log_fp)
         return proc
     except Exception as e:
         print(f"[QuantDeck] HARNESS 启动失败: {e}")
@@ -79,11 +87,33 @@ def _open_browsers():
         pass
 
 
+def _resolve_data_dir(base: Path) -> str:
+    """数据目录解析：环境变量 LWQUANT_CACHE_DIR > config/params.yaml data.cache_dir > 仓库 data/cache。
+
+    必须与 data/cache.py 的解析口径一致：仓库内仍有模块按相对路径 `data/cache/xxx.db` 直读，
+    启动器若把环境变量一律改写成 `data/`，两套路径就会指向不同目录（bars.db 读成空库 → 接口 500）。
+    """
+    env = os.environ.get("LWQUANT_CACHE_DIR")
+    if env:
+        return env
+    try:
+        import yaml
+        cfg_path = base / "config" / "params.yaml"
+        if cfg_path.exists():
+            cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+            d = (cfg.get("data") or {}).get("cache_dir")
+            if d:
+                p = Path(str(d))
+                return str(p if p.is_absolute() else base / p)
+    except Exception:
+        pass
+    return str(base / "data" / "cache")
+
+
 def main():
     base = base_dir()
-    if not os.environ.get("LWQUANT_CACHE_DIR"):
-        os.environ["LWQUANT_CACHE_DIR"] = str(base / "data")
-    data_dir = os.environ["LWQUANT_CACHE_DIR"]
+    data_dir = _resolve_data_dir(base)
+    os.environ["LWQUANT_CACHE_DIR"] = data_dir
     print(f"[QuantDeck] 数据目录: {data_dir}")
     if not (Path(data_dir) / "bars.db").exists():
         print("[QuantDeck] 提示: 未检测到 bars.db —— 请先获取数据（docs/快速开始.md §3），或使用演示数据模式")

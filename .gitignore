@@ -1,4 +1,4 @@
-﻿# ---- 环境 ----
+# ---- 环境 ----
 .venv/
 venv/
 __pycache__/
@@ -7,6 +7,8 @@ __pycache__/
 
 # ---- 本地配置（含真实密钥，勿提交） ----
 config/params.yaml
+config/strategies.yaml
+config/etf_pool.yaml
 harness/home/.credentials.yaml
 
 # ---- HARNESS 运行时与用户数据 ----
@@ -52,6 +54,16 @@ backups/
 # ---- 顶层单文件 EXE（>100MB，走 Release 附件） ----
 /QuantDeck.exe
 harness/home/profiles/node_modules/
+
+# ---- 便携运行时（Node 等，体积大，按需下载，不进仓库） ----
+runtime/
+portable-node/
+portable-py/
+
+# ---- 备份目录（修复 HARNESS 符号链接问题时产生的临时备份，勿提交） ----
+*node_modules*bak*/
+*.zip-bak-*/
+*.stub-bak-*/
 
 # ---- 内部维护文档（含本机路径，不进公开仓库） ----
 docs/上传GitHub.md

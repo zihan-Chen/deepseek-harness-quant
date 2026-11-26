@@ -174,6 +174,75 @@ def _resolve_route(path: str) -> Path:
 
 
 
+def _harness_live_snapshot(base: Path) -> dict:
+    """HARNESS 现场探活快照（替代 /api/harness 的 404 空态）。
+
+    控制页 `/control` 的"连接状态"卡读 /api/harness，字段约定：
+      harness{online,name,rev,updated_at} · agent{model,role,session_id,framework}
+      goal{active_task,objective_ctx,rounds_total,phase} · rounds[] · links.docs[]
+    快照文件 output/harness_state.json 由 agent 维护；未生成时现场合成：
+    探 127.0.0.1:3080、读已装 dsh 版本、读 settings.yaml 的模型路由。
+    """
+    import urllib.request as _ur
+    hroot = base / "harness"
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    ver = ""
+    try:
+        pkg = json.loads((hroot / "node_modules" / "@deepseek-ai" / "dsh" / "package.json")
+                         .read_text(encoding="utf-8"))
+        ver = str(pkg.get("version") or "")
+    except Exception:
+        pass
+
+    model = ""
+    try:
+        import yaml as _yaml
+        st = _yaml.safe_load((hroot / "home" / "settings.yaml").read_text(encoding="utf-8")) or {}
+        d = st.get("agent-default-model") or {}
+        model = " / ".join(x for x in (str(d.get("provider") or ""), str(d.get("model") or "")) if x)
+    except Exception:
+        pass
+
+    online = False
+    try:
+        with _ur.urlopen(_ur.Request("http://127.0.0.1:3080/"), timeout=1.5) as r:
+            online = (r.status == 200)
+    except Exception:
+        online = False
+
+    return {
+        "harness": {"online": online, "name": "DeepSeek HARNESS", "rev": ver or "—",
+                    "port": 3080, "updated_at": now, "derived": True},
+        "agent": {"model": model or "—", "role": "量化控制台（AI 驱动层）", "session_id": "—",
+                  "framework": ("dsh " + ver) if ver else "—", "updated_at": now},
+        "goal": {"active_task": "—", "rounds_total": 0, "phase": "—",
+                 "objective_ctx": "harness_state.json 尚未由 agent 生成；本卡为 deck 现场探活结果"},
+        "rounds": [],
+        "links": {"docs": [{"name": "HARNESS 接入", "path": "docs/HARNESS接入.md"},
+                           {"name": "一键部署", "path": "docs/一键部署.md"}]},
+        "derived": True,
+        "note": "快照文件缺失：现场探活（:3080 连通/dsh 版本/模型路由）；agent 写入文件后自动改读文件",
+    }
+
+
+def _proxy_path(rest: str) -> str:
+    """`/api/proxy/<rest>` → HARNESS :3080 实际路径的兼容映射。
+
+    ui_v2/pages/control.html 用 `quantapi/`、`niuapi/` 命名空间访问 AI 控制台
+    （/api/proxy/quantapi/sessions、/api/proxy/quantapi/chat2、/api/proxy/niuapi/chat …），
+    而开源包内置的 harness/home/profiles/web/plugins/dsq-quant-bridge.js 注册的是
+    `/quant/…` 与 `/quant/niu/…`。不做映射时请求落到 HARNESS 的 SPA 兜底，前端拿到
+    HTML 当 JSON 解析 → 控制台始终"暂不可达"。这里按前缀各做一次映射；
+    插件未实现的端点（unlock/delete/clear-all 等）仍由上游 404，前端按空态处理。
+    """
+    if rest.startswith("quantapi/"):
+        return "quant/" + rest[len("quantapi/"):]
+    if rest.startswith("niuapi/"):
+        return "quant/niu/" + rest[len("niuapi/"):]
+    return rest
+
+
 class Handler(BaseHTTPRequestHandler):
     # ★2026-08-10 个股检测缓存（类变量：跨请求共享；每请求实例会重置实例属性）
     _sc_cache = {}
@@ -265,13 +334,19 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/pitchtrack" or path == "/pitchtrack.html":   # ★2026-08-15 主观多池远期（5 池对比 + 牛散决策者分组）
             return self._v2_page("pitchtrack.html", "pitchtrack missing")
         if path == "/api/harness":   # ★2026-08-15 harness 状态快照（output/harness_state.json，agent 维护）
-            try:
-                _hs = BASE / "output" / "harness_state.json"
-                if _hs.exists():
+            # ★部署修复：快照文件未生成时原来返回 404，控制页 LW.api.get 对非 2xx 直接抛
+            #   `Error: HTTP 404` → 页面顶部"读取失败"。改为返回 200 + 现场探活快照
+            #   （探 :3080 在线、读 dsh 版本与模型），agent 写入文件后自动改读文件。
+            _hs = BASE / "output" / "harness_state.json"
+            if _hs.exists():
+                try:
                     return self._send_json(json.loads(_hs.read_text(encoding="utf-8")))
-                return self._send_json({"harness": {"online": False}, "error": "harness_state.json 未生成"}, 404)
+                except Exception:
+                    pass                      # 文件损坏 → 退回现场快照
+            try:
+                return self._send_json(_harness_live_snapshot(BASE))
             except Exception as e:
-                return self._send_json({"error": str(e)}, 500)
+                return self._send_json({"harness": {"online": False}, "error": str(e)}, 500)
         if path == "/api/build_mode":   # ★2026-08-16 构建模式（dev=开发版徽章 / release=公测发布版无徽章；config/ui_build.json 驱动）
             try:
                 _bm = BASE / "config" / "ui_build.json"
@@ -326,7 +401,7 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/proxy/"):   # ★2026-08-16 反向代理 GET → :3080 HARNESS（前端同源访问，零跨源）
             import urllib.request as _ur
             import urllib.error as _ue
-            _tgt = "http://127.0.0.1:3080/" + path[len("/api/proxy/"):]
+            _tgt = "http://127.0.0.1:3080/" + _proxy_path(path[len("/api/proxy/"):])
             if "?" in self.path:
                 _tgt += "?" + self.path.split("?", 1)[1]
             try:
@@ -686,7 +761,10 @@ class Handler(BaseHTTPRequestHandler):
             import glob as _glob
             files = sorted(_glob.glob(str(BASE / "logs" / "tech_pitch_*.json")), key=lambda x: Path(x).stat().st_mtime)
             if not files:
-                return self._send_json({"error": "科技池未生成（运行 tech_pitch.py）"}, 404)
+                # ★部署修复：原返回 404 → 门户「API 接口状态」把它算成离线（健康探测只看 200）。
+                #   科技池只是"还没生成"，接口本身是活的 → 200 + 空态，前端按空列表渲染。
+                return self._send_json({"ok": False, "empty": True, "date": "", "pitch": [],
+                                        "error": "科技池未生成（运行 factors/opportunities/tech_pitch_v3.py）"})
             return self._send_json(json.loads(Path(files[-1]).read_text(encoding="utf-8")))
         if path == "/dashboard_techpitch.html":   # ★2026-08-10 科技突破 Pitch 池页
             import glob as _glob
@@ -709,7 +787,9 @@ class Handler(BaseHTTPRequestHandler):
                 import glob as _gr
                 _fs = sorted(_gr.glob(str(BASE / "report" / "daily_report_*.md")), key=lambda x: Path(x).stat().st_mtime)
                 if not _fs:
-                    return self._send_json({"ok": False, "error": "日报未生成（等 19:00 自动化）"}, 404)
+                    # ★部署修复：同上——未生成日报时返回 200 空态（前端 report.html 已按 d.ok=false 渲染提示）
+                    return self._send_json({"ok": False, "empty": True, "date": "", "markdown": "",
+                                            "error": "日报未生成（运行 data/daily_report_auto.py，或等 18:30 自动链）"})
                 _md = Path(_fs[-1]).read_text(encoding="utf-8")
                 _date = re.search(r"daily_report_(\d{4}-\d{2}-\d{2})\.md", _fs[-1]).group(1) if re.search(r"daily_report_(\d{4}-\d{2}-\d{2})\.md", _fs[-1]) else ""
                 return self._send_json({"ok": True, "date": _date, "markdown": _md,
@@ -754,7 +834,7 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/proxy/"):   # ★2026-08-16 反向代理 POST → :3080（删除/批量/清空/发送全走这里）
             import urllib.request as _ur
             import urllib.error as _ue
-            _tgt = "http://127.0.0.1:3080/" + path[len("/api/proxy/"):]
+            _tgt = "http://127.0.0.1:3080/" + _proxy_path(path[len("/api/proxy/"):])
             try:
                 _body = self._read_json()
                 _req = _ur.Request(_tgt, data=json.dumps(_body).encode("utf-8"),

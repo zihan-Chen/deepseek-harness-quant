@@ -278,7 +278,7 @@ class DailyCache:
     def _ro_uri(p) -> str:
         """只读 immutable URI（★主库 3.7GB 普通连接等锁 20s → immutable 0.01s；
         已登记文件被环境锁只读时普通连接会等满 timeout）"""
-        return f"{Path(p).as_uri()}?mode=ro&immutable=1"
+        return f"{Path(p).resolve().as_uri()}?mode=ro&immutable=1"
 
     # ---------- 读取（唯一读取入口）----------
     def latest_trade_date(self):

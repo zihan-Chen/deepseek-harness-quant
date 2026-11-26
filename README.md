@@ -10,6 +10,83 @@ AI 不预测个股。这是硬约束，不是选项。
 事实层  数据系统        PIT · T+1 · 覆盖率分年核查（可证伪）
 ```
 
+## 本 fork 的改动（2026-11-25 ~ 11-26 · 源码部署 + 真实数据接入）
+
+> 本仓库 fork 自 [yuanwang589-dev/deepseek-harness-quant](https://github.com/yuanwang589-dev/deepseek-harness-quant)，
+> 在 Windows 上完成了一次完整源码部署、真实 A 股数据接入与若干线上故障修复。
+> 完整过程记录见 [docs/本地部署记录.md](docs/本地部署记录.md)。
+
+### 1. 部署环境
+
+| 项 | 做法 |
+|---|---|
+| Python | 仓库内独立 `.venv`（Python 3.14.10），**不走 conda、也不用 PATH 上的嵌入式 Python**（后者无 pip/依赖） |
+| Node | 官方便携版 **v24.22.3** 解压到 `runtime/node/`（`launcher.py` 优先使用它），HARNESS 运行时 `dsh 0.1.0-rc.6` |
+| 依赖 | `requirements.txt` 补 **`pyarrow`** —— 原清单漏了它，凡读 parquet 的模块（五福轮动/分钟数据/subj_quant）都会报 `Unable to find a usable frame engine` |
+| 启停 | `启动.cmd` 改为 `.venv` 优先；新增 `停止.cmd` + `scripts/stop_services.ps1`（按端口 8787/3080 停止） |
+
+### 2. 真实数据接入（全部免费源，无需 Tushare token）
+
+| 数据 | 脚本 | 结果 |
+|---|---|---|
+| 全市场日线（前复权） | `scripts/pull_real_data.py`（腾讯源，6 并发） | **5224 只 × 1915 日 = 8,603,715 行**，12.2 分钟，0 失败 |
+| 股票列表 + 行业 | `data/fetch_stock_basic.py`（baostock） | 5566 只（5224 只含行业） |
+| 沪深300（择时基准） | `scripts/load_index.py` | 1915 行（写入 `bars.db` 的 `SH.000300`） |
+| 历史流通市值 | `data/build_hist_mv.py`（amount÷turn 反推） | 83 个月 / 386,772 行 |
+| 财报（PIT） | `scripts/pull_finance_ths.py`（同花顺，宽表→长表适配） | `finance.db` 153,837 行 + `finance_quality.db` 153,589 行，5224 只全覆盖 |
+| 当前 ST 标记 | `scripts/mark_st_current.py` | 最新交易日 189 只（历史 ST 待数据源恢复后回填） |
+
+> 为什么不用项目自带的 `data/bulk_loader.py`：实测本机 baostock 单只 3–11 秒（全量需 8–10 小时），
+> 东财 `push2` 接口对本机 IP 限流，新浪 `stock_zh_a_hist_sina` 忽略 `adjust`（无复权）。腾讯源 0.55 秒/只且支持 qfq。
+
+### 3. 修复的线上故障
+
+| # | 现象 | 根因 | 修复 |
+|---|---|---|---|
+| 1 | 8787 端口被旧实例占用；启动后部分接口 500 | `launcher.py` 强行把缓存目录改写成 `data/`，与 `data/cache.py` 及 60+ 处写死的 `data/cache/*.db` 冲突 | `launcher.py` 改为 `环境变量 > params.yaml > data/cache` |
+| 2 | HARNESS 启动即退，无任何日志 | 子进程输出丢进 `DEVNULL` | 落盘 `logs/harness.log` |
+| 3 | 控制台"暂不可达" | 前端调 `/api/proxy/quantapi/*`，开源版桥接插件注册的是 `/quant/*` | `deck_server.py` 反代增加 `_proxy_path()` 命名空间映射 |
+| 4 | 控制页"读取失败：Error: HTTP 404" | `/api/harness` 快照文件缺失时返回 404 | 改为返回 200 + 现场探活快照（在线状态/版本/模型），文件存在时仍读文件 |
+| 5 | 门户"离线 2 个" | `/api/tech_pitch`、`/api/daily_report` 缺产物时返回 404，健康探测只认 200 | 改为 200 空态（`ok:false, empty:true`）；并补跑 `tech_pitch_v3.py`、`daily_report_auto.py` 产出真实数据 |
+| 6 | 全市场扫描报"行情面板为空" | 9 处 `Path(p).as_uri()` 对相对路径抛 `ValueError`，外层 `except: continue` 静默跳过 | 统一改为 `.resolve().as_uri()`（扫描/实时/持仓/短线钩子等） |
+| 7 | 扫描跑 21 分钟后 `UnicodeEncodeError: 'gbk' can't encode '⚡'` | Windows 控制台 GBK，脚本 print emoji | `scan.py`、`daily_report_auto.py` 顶部固定 stdout 为 UTF-8 + `errors=replace` |
+| 8 | 日报生成 `FileNotFoundError: report\...` | 全新仓库没有 `report/` 目录 | `daily_report_auto.py` 写入前自动建目录 |
+| 9 | 五福轮动报 `Unable to find a usable engine` | 缺 pyarrow，且 `data/factorpool/output/cache/wufu_*.parquet` 是作者侧产物、仓库不含 | 装 pyarrow；新增 `scripts/build_wufu_cache.py` 用新浪免费接口重建 4 指数 + 9 ETF 缓存；`widget()` 资产名改按列名映射（原来按位置硬编码） |
+| 10 | `/api/etf_map` 404、ETF 页空白 | 该路由是静态文件路由，`output/etf_map.json` 从未生成 | 跑 `etf/etf_map.py`（52 秒）→ 41 张 ETF pitch 卡 + 8 只配置建议 |
+| 11 | 门户"实时行情暂不可用" | akshare 1.20.46 把 `stock_zh_a_spot` 改名 `stock_zh_a_spot_sina` | `live_api.py` 动态解析新旧函数名；`market_open` 改按 A 股交易时段判断（原来恒为 True） |
+
+### 4. 新增的运维脚本
+
+| 脚本 | 用途 |
+|---|---|
+| `scripts/_bootstrap_config.py` | 从 `.example` 生成 `config/*.yaml`（params 里 20 个 `<your-config>` 占位符填本地缺省值） |
+| `scripts/_stage_demo_cache.py` | 无真实数据时把演示库落到 `data/cache`（含 `_DEMO_DATA.md` 声明） |
+| `scripts/_smoke_deploy.py` | 部署回归自检：从 `deck_server.py` **动态提取路由**并逐个探活（本次 121 条路由 / 36 个 API 全通过） |
+| `scripts/_inspect_db.py` | 只读盘点各 SQLite 表行数（排查数据缺口） |
+| `scripts/pull_real_data.py` / `load_index.py` / `pull_finance_ths.py` / `mark_st_current.py` / `build_wufu_cache.py` | 见上表 |
+
+### 5. 当前验证状态
+
+```
+页面/API 回归      OK 121 / FAIL 0（.venv\Scripts\python.exe scripts\_smoke_deploy.py）
+API 接口状态       36/36 在线
+全市场扫描         1196 条机会（revalue 586 / event 593 …），Pitch 1 只（000089.SZ 深圳机场 97.1）
+ETF 映射           41 张 pitch 卡 + 8 只配置建议（复制组合相关 0.759）
+五福轮动           9 只全球资产动量面板（parquet 缓存已重建）
+```
+
+> **数据不随仓库分发**：`data/`、`logs/`、`output/`、`report/`、`config/params.yaml`、`harness/home/.credentials.yaml`
+> 均已在 `.gitignore` 中；仓库只含代码、获取脚本与演示数据（合成序列），行情请按 `docs/数据说明.md` 自行获取。
+
+### 6. 已知限制
+
+- 估值类数据（PE/PB，走 tushare 备用服务器）未配置 → `value`/`quality_gap`/`pv_consensus` 类型扫描触发不了；
+- 历史 ST 标记未回填（仅最新交易日）；
+- 龙虎榜/股东户数/机构调研未拉取，相关因子为空；
+- 日更链路需手动/计划任务串起来（增量行情 → 扫描 → 科技池 → 日报 → 五福/ETF）。
+
+---
+
 ## 开始
 
 新用户直接走 [一键部署](docs/一键部署.md)。接入 AI API 后，数据源、配置、验证全交给 AI 向导，不必读本页其余内容。

@@ -169,7 +169,7 @@ def one_word_disclosure(entries: list) -> int:
             row = None
             for _p in _db_paths:
                 try:
-                    con = sqlite3.connect(_P(_p).as_uri() + "?mode=ro&immutable=1",
+                    con = sqlite3.connect(_P(_p).resolve().as_uri() + "?mode=ro&immutable=1",
                                           uri=True, timeout=3)
                     row = con.execute(
                         "SELECT open, high, low, close FROM daily_bar WHERE code=? AND date=?",

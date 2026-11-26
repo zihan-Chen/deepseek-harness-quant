@@ -1,6 +1,11 @@
 @echo off
-REM DSHQuant launcher: bundled Python first, else system Python
+REM DSHQuant launcher: project venv first, then bundled Python, then system Python.
+REM Source deploy: requirements.txt is installed into .venv, so prefer it over conda/system Python.
 cd /d "%~dp0"
+if exist ".venv\Scripts\python.exe" (
+  ".venv\Scripts\python.exe" launcher.py
+  goto :end
+)
 if exist "runtime\python\python.exe" (
   "runtime\python\python.exe" launcher.py
   goto :end
