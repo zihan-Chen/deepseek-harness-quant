@@ -48,6 +48,8 @@ except Exception:
 # (名称, [脚本相对路径, 参数...], 超时秒, 关键步骤?)
 STEPS_FULL = [
     ("增量日线",      ["scripts/pull_real_data.py", "--incremental", "--days-back", "5"],  1200, True),
+    # 兜底修复：任何来源写入的 preclose/pct_chg 空值（会让涨停/动量/振幅因子失真）
+    ("涨跌幅修复",    ["scripts/fix_preclose_pctchg.py"],                                   300, False),
     # ★ST 打标必须在增量日线之后：增量写入的 is_st 一律为 0（腾讯源无该字段），
     #   会覆盖掉前一日已打的标记 → 不补这步，当天的 ST 过滤与风控兜底全部失效
     #   （实测漏掉后池子里出现「ST八菱」）。

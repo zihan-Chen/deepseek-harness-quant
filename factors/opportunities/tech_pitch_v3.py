@@ -43,10 +43,94 @@ _NAME_MAP = {}                 # code → (name, industry)，build() 时加载
 _MV = {}                       # code → 市值（亿元），build() 时加载
 
 
+def _mechanism_text(r, industry: str = "") -> str:
+    """① 价值创造杠杆（**按该股自身特征生成**，不再全局套模板）。
+
+    ★2026-11-27：原实现所有卡片共用一句常量文案，用户反馈"每只票的机制/风险一模一样"。
+    现按"连板高度 / 涨停次数 / 换手水平 / 一字板 / 行业"分别叙述。
+    """
+    limup = int(r.get("limup_cnt") or 0)
+    consec = int(r.get("consec_max") or 0)
+    turn_last = r.get("turn_last")
+    turn_mean = r.get("turn_mean")
+    bits = []
+    if consec >= 2:
+        bits.append(f"{consec} 连板（情绪加速段）→ 只做缩量回踩，不追高位加速")
+    elif limup >= 1:
+        bits.append(f"近{LIMUP_DAYS}日 {limup} 次涨停（首板/低位板）→ 涨停反转 alpha（limup_ex_ret_20 ICIR 1.53）")
+    else:
+        tl = f"今日 {turn_last:.1f}% / 5日均 {turn_mean:.1f}%" if (
+            turn_last is not None and turn_mean is not None) else (
+            f"5日均 {turn_mean:.1f}%" if turn_mean is not None else "换手数据不足")
+        bits.append(f"无涨停，靠高换手资金关注（{tl}）")
+    if int(r.get("yizi_cnt") or 0):
+        bits.append(f"含一字板 {int(r['yizi_cnt'])} 次（买不进，已扣分）")
+    if industry:
+        bits.append(f"行业 {industry}")
+    return " · ".join(bits)
+
+
+def _risk_text(r, close, stop_px, trap, rk_level, is_new) -> str:
+    """③ 致命风险与对冲（**按该股自身风险**生成）。
+
+    ★2026-11-27：原实现是全局固定文案 + 固定止损纪律，用户反馈"每只票一模一样"。
+    现列出：连板高度、当日换手是否过热、高开诱多、新股样本不足、风控 WATCH、
+    现价距 ATR 止损的空间；最后附仓位纪律。
+    """
+    bits = []
+    consec = int(r.get("consec_max") or 0)
+    if consec >= 3:
+        bits.append(f"{consec} 连板，高位接力风险大")
+    tl = r.get("turn_last")
+    if tl is not None and tl >= 20:
+        bits.append(f"今日换手 {tl:.1f}% 偏高，防放量诱多")
+    if trap.get("trap"):
+        bits.append("涨停次日高开>5%，出货风险")
+    if is_new:
+        bits.append("上市不足 60 个交易日，技术样本不足")
+    if rk_level == "WATCH":
+        bits.append("风控 WATCH，需人工复核")
+    if stop_px and close:
+        room = (close - stop_px) / close
+        if room > 0:
+            bits.append(f"现价距 ATR 止损 {room:.1%}（止损 {stop_px}）")
+        else:
+            bits.append(f"现价已跌破 ATR 止损 {stop_px}，不应买入")
+    if not bits:
+        bits.append("无显著红旗，但必须按 ATR 止损执行")
+    return "；".join(bits) + "。仓位≤3 成，见光死 20% 就撤"
+
+
 def _board_pct(code: str) -> float:
-    """涨停阈值：创业板/科创板 20%，其余 10%（ST 5% 由 pct_chg 判定时天然区分）"""
-    c6 = code.split(".")[0]
-    return 19.5 if c6.startswith(("300", "301", "688")) else 9.5
+    """涨停幅度（**小数**，与 pct_chg 同口径）：创业板/科创板 20%，主板 10%，ST 5%。
+
+    ★2026-11-27 修复：原返回 19.5 / 9.5（百分数），却被拿去和 pct_chg（小数 0.10）比较，
+    导致**所有股票的涨停判定恒为 False**（"近5日涨停 0 次"就是这么来的）。
+    """
+    c6 = str(code).split(".")[0]
+    return 0.20 if c6.startswith(("300", "301", "688")) else 0.10
+
+
+def _limit_up_flags(df: pd.DataFrame) -> pd.Series:
+    """按**价格**判定涨停：收盘 ≥ 涨停价 round(前收×(1+幅度), 2)。
+
+    用价格而不是 `pct_chg >= 阈值`：涨停价四舍五入后实际涨幅常是 9.97%~9.99%
+    （例 岳阳兴长 000819 2026-11-16 收 14.10 / 前收 12.82 = +9.98%，正是涨停），
+    用阈值会漏判；20%/5% 板块也各有差异。
+    """
+    def _one(r):
+        try:
+            if int(r.get("is_st") or 0):
+                return 0          # ST 股不参与短线涨停计数（与既有设计一致）
+            pc = float(r.get("preclose"))
+            close = float(r.get("close"))
+        except Exception:
+            return 0
+        if not pc or pc <= 0 or not close:
+            return 0
+        limit_px = round(pc * (1 + _board_pct(r.get("code"))), 2)
+        return 1 if close >= limit_px - 0.0049 else 0
+    return df.apply(_one, axis=1)
 
 
 def load_recent(days: int = CONSEC_DAYS) -> pd.DataFrame:
@@ -69,7 +153,9 @@ def load_recent(days: int = CONSEC_DAYS) -> pd.DataFrame:
         except Exception:
             pass
         dates = sorted(set(dates))[-days:]
-        q = "SELECT code,date,open,high,low,close,pct_chg,volume,turn,is_st FROM daily_bar WHERE date IN (%s)" % ",".join("?" * len(dates))
+        # ★2026-11-27：补 preclose——涨停判定改为"收盘≥涨停价"必须用前收；
+        #   原 SELECT 没有 preclose，导致按价格判定永远拿不到前收（涨停数恒 0）。
+        q = "SELECT code,date,open,high,low,close,preclose,pct_chg,volume,turn,is_st FROM daily_bar WHERE date IN (%s)" % ",".join("?" * len(dates))
         df = pd.read_sql_query(q, con, params=dates)
         # ★#143 增量库同日数据补充（增量行覆盖主库同 key——keep=last 增量优先）
         try:
@@ -113,7 +199,7 @@ def _emotion_features(df: pd.DataFrame) -> pd.DataFrame:
     文案同时给"今日 / 5日均"，不再混口径。
     """
     df = df.copy()
-    df["limit_up"] = df.apply(lambda r: 1 if (r["pct_chg"] is not None and r["pct_chg"] >= _board_pct(r["code"]) and not r["is_st"]) else 0, axis=1)
+    df["limit_up"] = _limit_up_flags(df)
     # 一字板近似：涨停且当日高=低（无振幅）
     df["yizi"] = df.apply(lambda r: 1 if (r["limit_up"] and r["high"] == r["low"] and r["high"] > 0) else 0, axis=1)
     # 连板高度：按 code 分组，倒序日期计算连续涨停天数
@@ -180,7 +266,7 @@ def _open_premium_trap(code: str, df: pd.DataFrame) -> dict:
         return {"premium_pct": None, "trap": False}
     # limit_up 列在 _emotion_features 内部算，未合并回 df → 此处自算
     if "limit_up" not in g.columns:
-        g["limit_up"] = g.apply(lambda r: 1 if (r["pct_chg"] is not None and r["pct_chg"] >= _board_pct(r["code"]) and not r["is_st"]) else 0, axis=1)
+        g["limit_up"] = _limit_up_flags(g)
     limup_days = [i for i in range(len(g) - 1) if g["limit_up"].iloc[i] == 1]
     for i in reversed(limup_days):
         nxt = g.iloc[i + 1]
@@ -301,6 +387,20 @@ def build() -> Path:
 
     entries = []
     now_date = df["date"].max()
+    # ★2026-11-27：为"每只票的机制/风险文案"准备个股自身数据
+    _close_map = df.sort_values("date").groupby("code")["close"].last().to_dict()
+    _bars_n_map = {}
+    try:
+        _codes_all = cands["code"].tolist() if len(cands) else []
+        if _codes_all:
+            _con_n = sqlite3.connect(f"file:{BARS_DB}?mode=ro&immutable=1", uri=True, timeout=3)
+            _ph = ",".join("?" * len(_codes_all))
+            _bars_n_map = dict(_con_n.execute(
+                f"SELECT code, COUNT(*) FROM daily_bar WHERE adjust='qfq' AND code IN ({_ph}) "
+                f"GROUP BY code", _codes_all).fetchall())
+            _con_n.close()
+    except Exception:
+        _bars_n_map = {}
     # ★#334 短线卡片统一：补机制链/财务操纵/信号族（对齐长线 pitchCard 三问密度）
     _TECH_MECHANISM = ("涨停反转/情绪修复：超跌后资金回流 + 涨停质量验证（非一字、非高位连板）"
                        "→ 短线反弹 alpha（limup_ex_ret_20 ICIR 1.53 全库最强）· 只做反转不追高")
@@ -357,6 +457,13 @@ def build() -> Path:
         except Exception:
             _mv = 0.0
         _tier = size_tier_of(_mv)
+        # ★2026-11-27：按个股生成 ①机制 / ③风险 / 信号族（原为全局常量，所有卡片一模一样）
+        _close_px = float(_close_map.get(code) or 0.0)
+        _bars_n = int(_bars_n_map.get(code) or 0)
+        _ind_txt = (_NAME_MAP.get(code, ("", ""))[1] or "")
+        _mech = _mechanism_text(r, _industry_tag(code) or _ind_txt)
+        _risk_txt = _risk_text(r, _close_px, stop_px, trap, rk_level, _bars_n < 60)
+        _family = "涨停反转/情绪" if int(r.get("limup_cnt") or 0) >= 1 else "高换手动量"
         stop_plan = {
             "trailing_ma": 10,
             "stop_loss_pct": round(0.08, 2),
@@ -378,10 +485,10 @@ def build() -> Path:
                 {"name": "竞价反信号", "value": "strength≥6 回避", "note": "T-3 总指导裁决（2026-08-10）"},
             ],
             # ★2026-08-14 机制链（第一问"靠什么赚钱"）+ 财务操纵 + 信号族
-            "mechanism": _TECH_MECHANISM,
+            "mechanism": _mech,
             "beneish": ({"level": _beneish_map[code].get("level"), "m_score": _beneish_map[code].get("m_score")}
                         if _beneish_map.get(code) else None),
-            "signal_family": "情绪/动量",
+            "signal_family": _family,
             "score": score,
             "score_breakdown": score_breakdown,   # ★2026-08-11 打分拆解（前端展示各维度分）
             "total_mv_yi": round(_mv, 1) if _mv else None,
@@ -400,9 +507,7 @@ def build() -> Path:
             "risk_score": rc.get("score"),
             "risk_flags": rk_flags,
             "risk_note": rk_note,
-            "risk_notice": "科技线=情绪与资金短线：必须带止损（ATR 双倍线），跌破即走；高位连板≥3 回避"
-                           + ("；涨停次日高开诱多确认（>5% 出货信号，T+1 追入无肉）" if trap.get("trap") else "")
-                           + "；实证 C9（外包 08-12）：短线 5 日买拥挤赛道股（高换手/高情绪/放量）全部负超额 -0.3~-0.7pp——只做反转不追高",
+            "risk_notice": _risk_txt,
             "confidence": "中置信" if score >= 65 else "低置信",
             "board": "创业板" if code.split(".")[0].startswith(("300", "301")) else ("科创板" if code.split(".")[0].startswith("688") else "主板"),
             "tech_label": _industry_tag(code),

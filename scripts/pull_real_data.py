@@ -70,25 +70,37 @@ def _to_tx_symbol(code: str) -> str:
 
 
 def fetch_one(code: str, start: str, end: str):
-    """拉取单只前复权日线 → 标准化 DataFrame（不含写库）。"""
+    """拉取单只前复权日线 → 标准化 DataFrame（不含写库）。
+
+    ★2026-11-27 修复（关键）：原实现先按 start 切片再算 preclose，窗口**第一行**必然
+    shift 成 NaN → 写库时 INSERT OR REPLACE 把库里原本正确的前一日行覆盖成
+    preclose/pct_chg=NULL（实测 11-20、11-23 两天几乎全市场 pct_chg 变 NULL，
+    涨停次数/动量/振幅/反转全失真）。现改为：
+      1) 多取 15 个自然日的回看（只为算 preclose）；
+      2) 算完 preclose/pct_chg 再切回 [start, end]；
+      3) 首行若仍无前收（新股/超长停牌），宁可不写该行，也不要用 NaN 覆盖已有数据。
+    """
     import akshare as ak
     sym = _to_tx_symbol(code)
+    _lookback = (datetime.strptime(start, "%Y-%m-%d") - timedelta(days=15)).strftime("%Y-%m-%d")
     raw = ak.stock_zh_a_hist_tx(
-        symbol=sym, start_date=start.replace("-", ""), end_date=end.replace("-", ""),
+        symbol=sym, start_date=_lookback.replace("-", ""), end_date=end.replace("-", ""),
         adjust="qfq")
     if raw is None or raw.empty:
         return None
     df = raw.rename(columns={"turnover": "turn"}).copy()
     df["date"] = df["date"].astype(str)
-    df = df[df["date"] >= start]
-    if df.empty:
-        return None
     df["turn"] = pd.to_numeric(df["turn"], errors="coerce") * 100.0     # 小数 → %
     for c in ("open", "high", "low", "close", "volume", "amount"):
         df[c] = pd.to_numeric(df[c], errors="coerce")
     df = df.sort_values("date").reset_index(drop=True)
     df["preclose"] = df["close"].shift(1)
     df["pct_chg"] = df["close"] / df["preclose"] - 1.0
+    # 切回目标区间；窗口首行（若确实没有前收）丢弃，避免用 NaN 覆盖正确数据
+    df = df[(df["date"] >= start) & (df["date"] <= end)].copy()
+    df = df[df["preclose"].notna()]
+    if df.empty:
+        return None
     df["is_st"] = 0
     df["code"] = code.upper()
     return df[["date", "code", "open", "high", "low", "close", "preclose",
