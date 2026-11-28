@@ -60,6 +60,10 @@ STEPS_FULL = [
     ("沪深300指数",   ["scripts/load_index.py"],                                            300, False),
     ("宏观缓存",      ["data/fetch_macro_cache.py"],                                        300, False),
     ("五福缓存",      ["scripts/build_wufu_cache.py"],                                      300, False),
+    # 因子池页（/factors）的产物：拥挤度 + 因子体检 ICIR + manifest + daily_scores
+    ("因子池构建",    ["scripts/build_factorpool.py"],                                      600, False),
+    ("因子归因库",    ["data/build_factor_pitch_db.py"],                                    300, False),
+    ("统一数据视图",  ["data/build_unified_db.py"],                                         300, False),
     ("机会扫描",      ["factors/opportunities/scan.py", "--pitch"],                       2400, True),
     ("Pitch v2",     ["factors/opportunities/pitch_v2.py"],                               600, True),
     ("短线科技池",    ["factors/opportunities/tech_pitch_v3.py"],                          900, False),
